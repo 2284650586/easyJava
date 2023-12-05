@@ -4,6 +4,7 @@ import org.apache.commons.lang3.ArrayUtils;
 import org.example.bean.Constants;
 import org.example.bean.FieldInfo;
 import org.example.bean.TableInfo;
+import org.example.utils.JsonUtil;
 import org.example.utils.PropertiesUtil;
 import org.example.utils.StringUtil;
 import org.slf4j.Logger;
@@ -11,7 +12,9 @@ import org.slf4j.LoggerFactory;
 
 import java.sql.*;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 public class BuildTable {
 
@@ -19,6 +22,7 @@ public class BuildTable {
     private static final Logger logger = LoggerFactory.getLogger(BuildTable.class);
     private static final String SQL_SHOW_TABLE_STATUS = "show table status";
     private static final String SQL_SHOW_TABLE_FIELDS = "show full fields from %s";
+    private static final String SQL_SHOW_TABLE_INDEX = "show index from %s";
 
     static {
         String driverName = PropertiesUtil.getString("db.driver.name");
@@ -34,7 +38,7 @@ public class BuildTable {
         }
     }
 
-    public static void getTables() {
+    public static List<TableInfo> getTables() {
         PreparedStatement ps = null;
         ResultSet tableResult = null;
 
@@ -62,12 +66,15 @@ public class BuildTable {
                 tableInfo.setBeanName(beanName);
                 tableInfo.setComment(comment);
                 tableInfo.setBeanParamName(beanName + Constants.SUFFIX_BEAN_PARAM);
-                logger.info("表:{}, 备注:{}, javaBean:{}, javaParaBean:{}",
-                        tableInfo.getTableName(), tableInfo.getComment(), tableInfo.getBeanName(), tableInfo.getBeanParamName());
 
                 readFieldInfo(tableInfo);
+                getKeyIndexOf(tableInfo);
+
+
                 tableInfoList.add(tableInfo);
 
+
+                logger.info("表：{}", JsonUtil.convertObj2Json(tableInfo));
 
             }
         } catch (Exception e) {
@@ -95,9 +102,10 @@ public class BuildTable {
                 }
             }
         }
+        return tableInfoList;
     }
 
-    private static List<FieldInfo> readFieldInfo(TableInfo tableInfo) {
+    private static void readFieldInfo(TableInfo tableInfo) {
         PreparedStatement ps = null;
         ResultSet fieldResult = null;
 
@@ -131,26 +139,20 @@ public class BuildTable {
                 fieldInfo.setJavaType(processJavaType(type));
 
 
-                if(ArrayUtils.contains(Constants.SQL_DATE_TYPES,type) || ArrayUtils.contains(Constants.SQL_DATE_TIME_TYPES,type)){
+                if (ArrayUtils.contains(Constants.SQL_DATE_TYPES, type) || ArrayUtils.contains(Constants.SQL_DATE_TIME_TYPES, type)) {
                     haveDate = true;
                 }
-                if(ArrayUtils.contains(Constants.SQL_DECIMAL_TYPE,type)){
+                if (ArrayUtils.contains(Constants.SQL_DECIMAL_TYPE, type)) {
                     haveBigDecimal = true;
                 }
-
-                tableInfo.setFieldInfoList(fieldInfoList);
-
 
                 tableInfo.setHaveBigDecimal(haveBigDecimal);
                 tableInfo.setHaveDate(haveDate);
                 tableInfo.setHaveDateTime(haveDate);
 
                 fieldInfoList.add(fieldInfo);
-
-
-                logger.info("field:{}, type:{}, extre:{}, comment:{}, propertyName:{}, javaType:{}",
-                        field, type, extra, comment, propertyName, processJavaType(type));
             }
+            tableInfo.setFieldInfoList(fieldInfoList);
         } catch (Exception e) {
             logger.error("读取表失败");
         } finally {
@@ -169,8 +171,61 @@ public class BuildTable {
                 }
             }
         }
+    }
 
-        return fieldInfoList;
+
+    private static void getKeyIndexOf(TableInfo tableInfo) {
+        PreparedStatement ps = null;
+        ResultSet indexResult = null;
+
+        List<FieldInfo> fieldInfoList = new ArrayList<>();
+
+        try {
+
+            Map<String, FieldInfo> tempMap = new HashMap<>();
+            for (FieldInfo fieldInfo : tableInfo.getFieldInfoList()) {
+                tempMap.put(fieldInfo.getFieldName(), fieldInfo);
+            }
+
+            ps = conn.prepareStatement(String.format(SQL_SHOW_TABLE_INDEX, tableInfo.getTableName()));
+            indexResult = ps.executeQuery();
+            while (indexResult.next()) {
+                String keyName = indexResult.getString("key_name");
+                int nonUnique = indexResult.getInt("non_unique");
+                String columnName = indexResult.getString("column_name");
+
+                if (nonUnique == 1) {
+                    continue;
+                }
+
+                List<FieldInfo> keyFieldList = tableInfo.getKeyIndexMap().get(keyName);
+                if (null == keyFieldList) {
+                    keyFieldList = new ArrayList<>();
+                    tableInfo.getKeyIndexMap().put(keyName, keyFieldList);
+                }
+
+                keyFieldList.add(tempMap.get(columnName));
+
+
+            }
+        } catch (Exception e) {
+            logger.error("读取表失败");
+        } finally {
+            if (indexResult != null) {
+                try {
+                    indexResult.close();
+                } catch (SQLException e) {
+                    e.printStackTrace();
+                }
+            }
+            if (ps != null) {
+                try {
+                    ps.close();
+                } catch (SQLException e) {
+                    e.printStackTrace();
+                }
+            }
+        }
     }
 
     private static String processField(String field, Boolean upCaseFirstLetter) {
